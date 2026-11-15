@@ -1,0 +1,4 @@
+# Community Cloud: precomputed demo only, no Cellpose model download
+streamlit>=1.39,<2
+pandas>=2.1,<3
+Pillow>=10,<13

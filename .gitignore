@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+.streamlit/secrets.toml
+# Full input data and generated runs are not tracked by default.
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+# demo_results/ is explicitly allowed once produced from genuine runs.
