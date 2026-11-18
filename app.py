@@ -1,307 +1,226 @@
-"""Senescence Lens / FluoroCheck -- real Cellpose locally, honest precomputed web demo."""
-from __future__ import annotations
-import csv
-import json
-import os
+"""Senescence Lens v2. Saved-result experience; inference stays in local tools."""
 from pathlib import Path
-from datetime import datetime, timezone
+import json
 import importlib.util
-import io
-
 import pandas as pd
+from PIL import Image, UnidentifiedImageError
 import streamlit as st
 
+from senlens.saved_results import LABELS, read_results, rank_cases, explain, safe_asset, change_statement
+
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / 'data'
-DEMOS = ROOT / 'demo_results'
-OUTPUTS = ROOT / 'outputs'
-AVAILABLE_LOCAL = importlib.util.find_spec('cellpose') is not None
+BUNDLE = ROOT / "demo_results_v2"
+BASELINE = BUNDLE / "baseline" if BUNDLE.exists() else ROOT / "demo_results"
+FOLLOWUP = BUNDLE / "followup" if BUNDLE.exists() else ROOT / "outputs/v2_followup_20261118"
+GALLERY = ROOT / "gallery_results" if (ROOT / "gallery_results").exists() else ROOT / "outputs/v21_gallery"
+ERROR_MAPS = BUNDLE / "errors" if BUNDLE.exists() else ROOT / "outputs/v2_errors_all_20261118"
 
-st.set_page_config(page_title='Senescence Lens | FluoroCheck', page_icon='🔬', layout='wide')
-st.markdown('''<style>
-.block-container{padding-top:1.3rem;max-width:1340px}
-h1,h2,h3{letter-spacing:-.035em}
-[data-testid="stMetric"]{border:1px solid #dde5ef;border-radius:14px;padding:14px}
-div.stButton>button[kind="primary"]{background:#295aab;border-radius:12px}
-</style>''', unsafe_allow_html=True)
-
-
-def heading():
-    st.title('🔬 Senescence Lens')
-    st.caption('AI Fluorescence Image Analysis & Reliability Lab | 교육·연구용 프로토타입')
-    st.info('세포핵 형태 및 탐지 성능 분석 도구입니다. 세포 노화·질병을 진단하거나 의료적 판단을 제공하지 않습니다.', icon='ℹ️')
-
-
-def get_available_pairs():
-    from senlens.io_data import pair_dataset
-    return [p for p in pair_dataset(DATA) if p[2] is not None]
+st.set_page_config(page_title="NucleoLens AI · AI 세포핵 탐지·정확도 검증 체험 플랫폼", page_icon="🔬", layout="wide")
+st.markdown("""
+<style>
+.block-container{max-width:1280px;padding-top:2rem}
+h1,h2,h3{letter-spacing:-.025em;overflow-wrap:anywhere;white-space:normal}
+[data-testid="stMetric"]{border:1px solid #dce5ef;border-radius:12px;padding:12px}
+[data-testid="stSidebar"]{background:#f1f5fb}
+[data-testid="stMetricValue"]>div{white-space:normal;overflow-wrap:anywhere;font-size:1.65rem}
+[data-testid="stButton"] p{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:700px){.block-container{padding:1rem}h1{font-size:1.9rem}}
+</style>
+""", unsafe_allow_html=True)
 
 
-def local_analysis():
-    st.subheader('① 세포핵 실제 AI 분석')
-    st.caption('이 페이지는 Cellpose 3 모델을 로컬 CPU에서 실행합니다. AI 결과를 시뮬레이션하지 않습니다.')
-    if not AVAILABLE_LOCAL:
-        st.error('현재 환경에 Cellpose가 없습니다. 로컬 설치 시 `pip install -r requirements-local.txt`를 실행하세요.')
+def picture(folder, relative, caption, plain=False):
+    try:
+        path = safe_asset(folder, relative)
+        if plain:
+            path = safe_asset(folder, str(Path(relative).with_name(Path(relative).stem + "_input" + Path(relative).suffix)))
+        with Image.open(path) as img:
+            st.image(img.copy(), caption=caption, use_container_width=True)
+    except (OSError, ValueError, UnidentifiedImageError):
+        st.warning("이 사진을 열 수 없습니다. 다른 사진을 골라 보거나 시연 파일을 확인해 주세요.")
+
+
+def baseline_row(frame, stem):
+    return frame[(frame.stem == stem) & (frame.condition == "original")].iloc[0]
+
+
+def error_picture(row):
+    index_path = ERROR_MAPS / "error_index.csv"
+    if not index_path.exists():
+        st.info("이 사진의 오류 위치 표시는 아직 준비 중입니다. 위의 놓침·오탐 수는 기존 측정 기록입니다.")
         return
-    pairs = get_available_pairs()
-    up = st.radio('이미지 입력 방식', ['BBBC039 데이터에서 선택', '내 TIFF 이미지 업로드'], horizontal=True)
-    input_name = None
-    gt = None
-    if up.startswith('BBBC039'):
-        if not pairs:
-            st.warning('공식 데이터가 없습니다. `python download_data.py --yes`를 먼저 실행하세요.')
+    try:
+        index = pd.read_csv(index_path)
+        selected = index[(index.stem == row.stem) & (index.condition == row.condition)]
+        if selected.empty:
+            st.info("이 조건의 오류 이미지를 준비하고 있습니다. 잠시 후 다시 선택해 주세요.")
             return
-        names = [x[0] for x in pairs]
-        input_name = st.selectbox('공개 데이터 이미지 선택', names)
-        _, ipath, mpath = next(x for x in pairs if x[0] == input_name)
-        from senlens.io_data import read_image, decode_ground_truth
-        raw = read_image(ipath)
-        gt = decode_ground_truth(mpath)
-        st.caption(f'데이터: BBBC039v1 | 정답 있음 | 원본 {raw.shape}, {raw.dtype}')
-    else:
-        upload = st.file_uploader('2D TIFF 원본 이미지', type=['tif', 'tiff'])
-        gtupload = st.file_uploader('정답 마스크 PNG (선택)', type=['png'])
-        if upload is None:
-            st.warning('분석할 TIFF 파일을 선택하세요.')
+        match = selected.iloc[0]
+        if any(int(match[key]) != int(row[key]) for key in ["gt_count", "pred_count", "tp", "fp", "fn"]):
+            st.warning("오류 이미지와 기록의 수치가 달라 표시를 보류했습니다.")
             return
-        input_name = Path(upload.name).stem
-        from senlens.io_data import read_image, decode_ground_truth
-        try:
-            raw = read_image(upload.getvalue())
-            if gtupload:
-                gt = decode_ground_truth(gtupload.getvalue())
-        except Exception as e:
-            st.error(str(e)); return
-        st.caption('개인 업로드 이미지에는 촬영조건·사용 권한이 별도로 필요합니다.')
-    from senlens.processing import CONDITIONS, normalize_once, perturb, seed_for_image
-    keys = [x[0] for x in CONDITIONS]
-    labels = {x[0]: x[1] for x in CONDITIONS}
-    condition = st.selectbox('실험 조건 (원본 또는 이미지 품질 변형)', keys, format_func=lambda x: labels[x])
-    st.caption('원본에서 계산한 명암 기준을 모든 변형에 고정하고 Cellpose 내부 자동 정규화를 끕니다.')
-    zoom = st.slider('중앙 확대 배율', min_value=1, max_value=4, value=1)
-    boundaries = st.checkbox('AI 세포핵 경계 표시', value=True)
-    if st.button('실제 Cellpose 3 nuclei AI 실행', type='primary'):
-        try:
-            from senlens.inference import load_model, infer
-            from senlens.metrics import score_instances, nuclei_statistics
-            from senlens.visuals import rgb_overlay, zoom_center
-            from senlens.processing import preview_gray
-            import numpy as np
-            from PIL import Image
-            from senlens.report import save_csv, save_json
-            base, (lo, hi) = normalize_once(raw)
-            variant = perturb(base, condition, seed_for_image(input_name))
-            with st.spinner('Cellpose nuclei 모델이 실제로 실행 중입니다. 첫 실행에는 모델 다운로드가 필요할 수 있습니다.'):
-                model = load_model()
-                predicted = infer(model, variant, diameter=17)
-            a, b = st.columns(2)
-            with a:
-                st.image(zoom_center(preview_gray(variant), zoom), caption='분석 입력 이미지', clamp=True, use_container_width=True)
-            with b:
-                shown = rgb_overlay(variant, predicted) if boundaries else preview_gray(variant)
-                st.image(zoom_center(shown, zoom), caption='AI가 찾은 핵의 경계 (황색) — 표시 전환 가능', use_container_width=True)
-            nuclei = nuclei_statistics(predicted)
-            count = len(nuclei)
-            if gt is not None:
-                result = score_instances(predicted, gt)
-                c1,c2,c3,c4 = st.columns(4)
-                c1.metric('AI 핵 개수', count)
-                c2.metric('정답 개수', result['gt_count'])
-                c3.metric('Instance F1', f"{result['f1']:.3f}")
-                c4.metric('Foreground IoU', f"{result['foreground_iou']:.3f}")
-                st.caption('F1은 개별 핵을 IoU≥0.5로 일대일 대응하여 계산, Foreground IoU는 모든 핵 영역의 픽셀 단위 일치도입니다.')
-            else:
-                result = {'pred_count': count, 'gt_count': None, 'f1': None}
-                st.metric('탐지된 세포핵 수', count)
-                st.warning('정답 이미지가 없어 F1·IoU는 계산할 수 없습니다. 임의 수치를 표시하지 않습니다.')
-            st.dataframe(pd.DataFrame(nuclei).head(30), use_container_width=True)
-            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-            out = OUTPUTS / f'single_{stamp}'
-            out.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(rgb_overlay(variant, predicted)).save(out/'overlay.png')
-            save_csv(out/'metrics.csv', [{'stem': input_name, 'condition': condition, **result}])
-            save_csv(out/'nuclei.csv', nuclei if nuclei else [{'nucleus_id':'','area_px2':'','circularity':''}])
-            save_json(out/'manifest.json', {'real_cellpose': True, 'source': input_name,
-                'condition': condition, 'baseline_p1_p99': [lo, hi], 'model':'nuclei',
-                'diameter_px': 17, 'normalize_in_model': False, 'captured_utc': stamp})
-            st.success(f'실제 AI 분석 기록 저장: {out.relative_to(ROOT)}')
-            with (out/'metrics.csv').open('rb') as f:
-                st.download_button('측정 CSV 다운로드', data=f.read(), file_name='senescence_lens_metrics.csv', mime='text/csv')
-        except Exception as e:
-            st.exception(e)
+        picture(ERROR_MAPS, match.error_file, "초록 · 맞게 찾은 핵 / 빨강 · 놓친 핵 / 노랑 · 잘못 찾은 핵")
+        st.caption("IoU 0.50 이상인 핵을 하나씩 짝지었습니다. 경계가 달라 짝이 안 맞으면 놓침과 오탐이 함께 생길 수 있습니다. 특정 오류의 원인은 추가 확인이 필요합니다.")
+    except (OSError, ValueError, KeyError, pd.errors.ParserError):
+        st.warning("오류 표시 파일을 읽지 못했습니다. 기본 분석 수치는 아래에서 확인할 수 있습니다.")
 
 
-def choose_images():
-    st.subheader('② 내가 직접 고르는 20장 — 선정 근거 기록')
-    pairs = get_available_pairs()
-    if not pairs:
-        st.warning('BBBC039 데이터를 먼저 내려받으세요: `python download_data.py --yes`')
+def describe(row):
+    st.write(explain(row))
+    a, b, c = st.columns(3)
+    a.metric("핵을 잘 찾은 정도 · F1", f"{row.f1:.3f}")
+    b.metric("핵 영역이 겹친 정도 · IoU", f"{row.foreground_iou:.3f}")
+    c.metric("놓친 핵", f"{int(row.fn)}개")
+    with st.expander("점수와 정답은 어떻게 확인하나요?"):
+        st.write("F1은 놓친 핵과 잘못 찾은 핵을 함께 반영합니다. 1에 가까울수록 좋습니다. 여기서 IoU는 모든 핵 영역이 정답과 겹치는 비율입니다. 사람이 핵마다 표시한 정답 마스크와 AI 예측을 비교했습니다.")
+
+
+def home(frame):
+    st.title("NucleoLens AI")
+    st.subheader("AI 세포핵 탐지·정확도 검증 체험 플랫폼")
+    st.write("AI는 세포핵을 얼마나 정확하게 찾을까?")
+    from senlens.gallery import read_gallery
+    try:
+        gallery = read_gallery(GALLERY)
+        a,b,c=st.columns(3)
+        a.metric("전체 체험 사진", f"{len(gallery)}장")
+        b.metric("공개 데이터셋", f"{gallery.dataset.nunique()}개")
+        c.metric("AI 모델", "Cellpose 3 nuclei")
+    except (OSError,ValueError,KeyError,pd.errors.ParserError):
+        st.info("240장 체험 갤러리를 준비 중입니다.")
+    st.write("다양한 공개 세포 사진에서 AI가 핵을 찾는 모습과 오류를 살펴보세요. BBBC039는 형광 사진이며 BBBC038에는 여러 관찰 조건의 사진이 포함됩니다.")
+    st.subheader("FluoroCheck · 기존 20장의 이미지 품질 실험")
+    originals = frame[frame.condition == "original"]
+    noisy = frame[frame.condition == "noise_3"]
+    a, b, c = st.columns(3)
+    a.metric("저장된 실제 분석", f"{len(frame)}회")
+    b.metric("원본 평균 F1", f"{originals.f1.mean():.3f}")
+    c.metric("강한 잡음 평균 F1", f"{noisy.f1.mean():.3f}")
+    picture(BASELINE, originals.iloc[0].overlay_file, "공개 형광 이미지에서 AI가 찾은 세포핵")
+    st.write("왼쪽 메뉴에서 사진을 골라 체험하고, AI가 어려워한 사례와 잡음 제거 실험을 확인하세요.")
+    st.caption("학생이 직접 고른 20장에 대한 탐색 실험입니다. 이 평균을 전체 데이터의 성능으로 일반화할 수 없습니다.")
+    with st.expander("기존 연구 도구 · 로컬 AI 실행 / 20장 선정 / 결과 내보내기"):
+        if importlib.util.find_spec("cellpose") is not None:
+            from app_legacy import local_analysis, choose_images, result_view, guide
+            tool = st.selectbox("연구 도구", ["사용 안내", "로컬 AI 분석", "20장 선정", "기존 결과"])
+            {"사용 안내": guide, "로컬 AI 분석": local_analysis, "20장 선정": choose_images, "기존 결과": result_view}[tool]()
+        else:
+            st.write("웹에서는 저장된 결과를 봅니다. 새로운 AI 계산과 사진 선정은 Python과 Cellpose를 설치한 내 컴퓨터에서 할 수 있습니다.")
+        st.download_button("기존 200회 측정 CSV 받기", (BASELINE / "records.csv").read_bytes(), "records.csv", "text/csv")
+
+
+def experience(frame):
+    st.title("AI 분석 체험")
+    mode=st.radio("체험 선택", ["240장 사진 갤러리", "FluoroCheck · 밝기·잡음·흐림"], horizontal=True)
+    if mode=="240장 사진 갤러리":
+        from senlens.gallery import gallery_view
+        gallery_view(GALLERY)
         return
-    by_name = {p[0]: p for p in pairs}
-    selection_file = DATA / 'selection.csv'
-    previous = {}
-    if selection_file.exists():
-        with selection_file.open(encoding='utf-8-sig', newline='') as f:
-            previous = {r['stem']: r.get('reason','') for r in csv.DictReader(f)}
-    from senlens.io_data import read_image
-    from senlens.processing import normalize_once, preview_gray
-
-    preview_col, selection_col = st.columns(2)
-    with preview_col:
-        candidate = st.selectbox('미리 볼 원본 사진', sorted(by_name))
-        _, image_path, _ = by_name[candidate]
-        image, _ = normalize_once(read_image(image_path))
-        st.image(preview_gray(image), use_container_width=True)
-    with selection_col:
-        st.caption('원본의 밝기, 핵 모양, 핵이 모여 있는 정도를 살펴보고 사진을 고르세요.')
-        st.button(
-            '이 사진을 선정 목록에 추가',
-            disabled=candidate in st.session_state.get('selected_images', previous)
-            or len(st.session_state.get('selected_images', previous)) >= 20,
-            on_click=lambda: st.session_state.selected_images.append(candidate),
-        )
-    chosen = st.multiselect('실험에 사용할 이미지 20장 선택', sorted(by_name), default=list(previous),
-                            max_selections=20, key='selected_images')
-    st.write(f'현재 **{len(chosen)} / 20장** 선택')
-    if chosen:
-        with st.expander('사진을 고른 이유 (선택)'):
-            editor = st.data_editor(
-                pd.DataFrame([{'stem': n, 'reason': previous.get(n, '')} for n in chosen]),
-                hide_index=True, disabled=['stem'], num_rows='fixed', use_container_width=True,
-                column_config={'reason': '선정 이유 (선택)'},
-            )
-        if st.button('20장 선정 목록 저장', type='primary'):
-            if len(chosen) != 20:
-                st.error('정확히 20장을 선택해야 합니다.')
-            else:
-                selection_file.parent.mkdir(parents=True,exist_ok=True)
-                editor.to_csv(selection_file, index=False, encoding='utf-8-sig')
-                st.success('저장됨: data/selection.csv. 다음 명령: python run_batch.py --limit 1')
-    st.caption('결과를 본 뒤 점수가 낮은 사진을 목록에서 빼지 마세요.')
+    quality_experience(frame)
 
 
-def find_results():
-    candidates = []
-    if (DEMOS/'manifest.json').exists():
-        candidates.append(DEMOS)
-    if OUTPUTS.exists():
-        candidates.extend(sorted((p for p in OUTPUTS.glob('run_*') if (p/'manifest.json').exists()),reverse=True))
-    return candidates
-
-
-def result_view():
-    st.subheader('③ FluoroCheck — 실험 결과 보기')
-    st.caption('실제 AI를 실행하고 저장한 결과만 표시합니다. 웹에서는 AI를 새로 실행하지 않습니다.')
-    folders = find_results()
-    if not folders:
-        st.warning('아직 실제 분석 결과가 없습니다. 로컬에서 `python run_batch.py`로 분석한 다음 `python export_web.py 출력폴더`를 실행하세요.')
-        return
-    folder = st.selectbox('실험 결과 선택', folders, format_func=lambda p: str(p.relative_to(ROOT)))
-    manifest = json.loads((folder/'manifest.json').read_text(encoding='utf-8'))
-    if not manifest.get('real_cellpose'):
-        st.error('실제 Cellpose 실행 증빙이 없는 결과입니다.');return
-    if manifest.get('state') != 'complete':
-        st.warning('부분 완료 결과: 전체 200회가 성공한 결과가 아닙니다.')
-    if not (folder/'records.csv').exists():
-        st.error('records.csv 파일이 없습니다.'); return
-    df = pd.read_csv(folder/'records.csv')
-    st.caption(f"Cellpose 실제 추론: {manifest.get('completed_runs','?')} / {manifest.get('expected_runs','?')}회 · "
-               f"모델 {manifest.get('installed_cellpose',manifest.get('model_version_target'))} · "
-               f"선정 방식: {manifest.get('selection_method','미기록')}")
-    mean_f1 = df['f1'].mean() if 'f1' in df else float('nan')
-    original = df[df.condition=='original']
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric('완료된 추론', len(df))
-    c2.metric('분석 이미지 수', df.stem.nunique())
-    c3.metric('원본 평균 F1', f"{original.f1.mean():.3f}" if not original.empty else '—')
-    c4.metric('전체 조건 평균 F1', f'{mean_f1:.3f}')
-    if (folder/'summary.png').exists():
-        st.image(str(folder/'summary.png'), use_container_width=True)
-    stems = list(df.stem.drop_duplicates())
-    current = st.selectbox('이미지 선택', stems)
-    options = list(df[df.stem==current].condition)
-    condition = st.selectbox('조건 선택', options)
-    row = df[(df.stem==current)&(df.condition==condition)].iloc[0]
-    first = df[(df.stem==current)&(df.condition=='original')].iloc[0]
-    zoom = st.slider('중앙 확대 배율', min_value=1, max_value=4, value=1, key='demo_zoom')
-    boundaries = st.checkbox('AI 핵 경계 표시', value=True, key='demo_boundaries')
-    a,b = st.columns(2)
-    from PIL import Image
-    import numpy as np
-    def show_result(path, alt):
-        from PIL import Image
-        if not boundaries:
-            plain = path.with_name(path.stem + '_input.png')
-            if plain.exists(): path = plain
-            else:
-                st.caption('이전 버전에는 경계 없는 미리보기가 없습니다.')
-        if path.exists():
-            # Cropping via PIL avoids requiring OpenCV in the cloud demo.
-            im = Image.open(path)
-            if zoom > 1:
-                w,h=im.size; cw,ch=max(1,w//zoom),max(1,h//zoom)
-                x,y=(w-cw)//2,(h-ch)//2
-                im=im.crop((x,y,x+cw,y+ch)).resize((w,h))
-            st.image(im, caption=alt, use_container_width=True)
-        else: st.info('이 이미지 미리보기는 저장되지 않았습니다. CSV 수치를 확인하세요.')
+def quality_experience(frame):
+    stems = list(frame.stem.drop_duplicates())
+    stem = st.selectbox("사진 선택", stems, format_func=lambda value: f"사진 {stems.index(value)+1:02d} · {value[:13]}")
+    rows = frame[frame.stem == stem]
+    condition = st.selectbox("사진 조건", rows.condition.tolist(), format_func=lambda value: LABELS.get(value, value))
+    row = rows[rows.condition == condition].iloc[0]
+    describe(row)
+    a, b = st.columns(2)
     with a:
-        st.markdown('**원본 AI 탐지 결과**')
-        fp = folder / str(first.get('overlay_file',''))
-        if first.get('overlay_file') and fp.exists(): show_result(fp,'원본 분석 결과')
-        else: st.info('이 이미지의 웹 미리보기는 저장되지 않았습니다. 원본 수치는 CSV에 있습니다.')
+        picture(BASELINE, row.overlay_file, "AI에 넣은 사진", plain=True)
     with b:
-        st.markdown('**선택 조건 AI 탐지 결과**')
-        fp = folder / str(row.get('overlay_file',''))
-        if row.get('overlay_file') and fp.exists(): show_result(fp,'변형 이미지 분석 결과')
-        else: st.info('미리보기 없음. 다음 저장 시 --preview-count 값을 조정할 수 있습니다.')
-    reason = row.get('selection_reason')
-    if pd.notna(reason) and str(reason).strip():
-        st.write(f'선정 이유: {reason}')
-    st.dataframe(df[df.stem==current][['condition','gt_count','pred_count','tp','fp','fn','f1','foreground_iou','abs_count_error']],
-                 hide_index=True, use_container_width=True)
-    st.download_button('200회 전체 분석 CSV 다운로드', data=(folder/'records.csv').read_bytes(),
-            file_name='senescence_lens_records.csv', mime='text/csv')
-    st.info('F1은 개별 핵을 IoU≥0.50 조건으로 일대일 대응한 결과입니다. 원본·변형 모두 동일한 수작업 정답 마스크를 사용합니다.')
+        picture(BASELINE, row.overlay_file, "AI가 찾은 핵의 경계")
+    st.subheader("AI는 어디에서 틀렸을까요?")
+    error_picture(row)
+    with st.expander("사진 이름과 상세 기록"):
+        st.write(stem)
+        st.dataframe(rows[["condition", "tp", "fp", "fn", "f1", "foreground_iou"]], hide_index=True)
 
 
-def guide():
-    st.subheader('④ 사용 방법과 실험 기록')
-    st.markdown('''
-    **실제 AI 분석과 온라인 시연은 다릅니다.** 로컬 모드는 Cellpose 모델을 실행합니다. 온라인 결과 화면은 로컬에서 계산한 정답 기반 검증 기록을 보여줍니다.
+def hardest(frame):
+    st.title("AI가 어려워하는 사진 TOP 5")
+    criterion = st.selectbox("순위 기준", ["drop", "f1", "missed"],
+                             format_func=lambda value: {"drop": "원본보다 F1이 많이 떨어진 순", "f1": "F1이 낮은 순", "missed": "놓친 핵이 많은 순"}[value])
+    mode = st.radio("순위 묶기", ["사진별", "사진·조건별"], horizontal=True)
+    st.caption("사진별은 사진마다 가장 어려운 조건 하나를 고릅니다. 사진·조건별은 같은 사진이 여러 번 나올 수 있습니다.")
+    ranking = rank_cases(frame, criterion, mode == "사진별")
+    names = list(frame.stem.drop_duplicates())
+    for index, row in ranking.iterrows():
+        st.write(f"**{index+1}위 · 사진 {names.index(row.stem)+1:02d} · {LABELS.get(row.condition, row.condition)}** · F1 {row.f1:.3f} · 원본 대비 {row.delta_f1:+.3f} · 놓친 핵 {int(row.fn)}개")
+    choice = st.selectbox("자세히 볼 순위", list(range(len(ranking))), format_func=lambda number: f"{number+1}위")
+    row = ranking.iloc[choice]
+    st.caption(row.stem)
+    describe(row)
+    original = baseline_row(frame, row.stem)
+    a, b, c = st.columns(3)
+    with a:
+        picture(BASELINE, original.overlay_file, "원본 사진", plain=True)
+    with b:
+        picture(BASELINE, row.overlay_file, "문제가 된 조건", plain=True)
+    with c:
+        picture(BASELINE, row.overlay_file, "이 조건의 AI 경계")
+    error_picture(row)
 
-    **실습 순서**
-    1. Windows에 Python 3.11 설치 → `py -3.11 -m venv .venv` → `.venv\\Scripts\\activate`.
-    2. `python -m pip install -r requirements-local.txt`.
-    3. `python download_data.py --yes`로 BBBC039 이미지·정답 내려받기.
-    4. `streamlit run app.py`에서 원본 이미지 1장으로 모델 실행.
-    5. '20장 선정' 메뉴에서 사진 20장 저장. 선정 이유 입력은 선택.
-    6. `python run_batch.py --limit 1`로 시험 실행.
-    7. `python run_batch.py`로 20장 × 10조건 실제 실행.
-    8. `python export_web.py outputs/run_실제이름`으로 웹 시연 자료 내보내기.
 
-    **검증 기록 필수:** 학생이 설정한 밝기·잡음·흐림과 이유, 실패한 이미지, 해결한 오류, 출처, 소프트웨어 버전을 기록하세요.
-
-    **데이터 출처:** [Broad BBBC039 공식 페이지](https://bbbc.broadinstitute.org/BBBC039). BBBC039는 Hoechst 염색 핵 분할용 데이터이며 노화 상태 정답 데이터가 아닙니다.
-
-    **기술·연구 한계:** 20장 수동 선정 결과는 모집단 대표성이 없습니다. 이 앱은 의료기기가 아닙니다.
-    ''')
+def improvement():
+    st.title("잡음을 줄이면 AI가 다시 잘 찾을까요?")
+    st.write("강한 잡음에서 F1 하락이 컸던 사진 5장에 3×3 Median Filter를 적용했습니다. 주변 9개 픽셀의 가운데 값을 써서 잡음을 줄이는 방법입니다.")
+    try:
+        frame = read_results(FOLLOWUP)
+    except (OSError, ValueError, KeyError, pd.errors.ParserError):
+        st.info("추가 실험 결과를 준비 중입니다. 완료 후 이 화면에서 실제 점수를 확인할 수 있습니다.")
+        return
+    means = frame.groupby("condition").f1.mean().reindex(["original", "noise_3", "median_3"])
+    delta = means["median_3"] - means["noise_3"]
+    st.metric("잡음 제거 후 평균 F1 변화", f"{delta:+.3f}")
+    st.caption("같은 5장의 원본·강한 잡음도 다시 계산했습니다. 기존 200회 결과와 비교한 재현 여부는 개발 기록에 남겼습니다.")
+    st.bar_chart(pd.DataFrame({"평균 F1": means.values}, index=[LABELS[x] for x in means.index]), y_label="F1")
+    stems = list(frame.stem.drop_duplicates())
+    stem = st.selectbox("실험 사진", stems, format_func=lambda value: f"어려운 사진 {stems.index(value)+1}")
+    rows = frame[frame.stem == stem].set_index("condition").loc[["original", "noise_3", "median_3"]]
+    a, b, c = st.columns(3)
+    for col, (condition, row) in zip([a, b, c], rows.iterrows()):
+        with col:
+            picture(FOLLOWUP, row.overlay_file, LABELS[condition], plain=True)
+            st.metric("F1", f"{row.f1:.3f}")
+    st.write(change_statement(rows.loc["noise_3", "f1"], rows.loc["median_3", "f1"]))
+    comparison = rows[["f1", "foreground_iou"]].rename(index=LABELS, columns={"f1": "F1", "foreground_iou": "IoU · 핵 영역 겹침"})
+    st.dataframe(comparison)
+    with st.expander("이 실험의 AI 경계와 오류 보기"):
+        condition = st.selectbox("확인할 실험 조건", list(rows.index), format_func=LABELS.get)
+        row = rows.loc[condition]
+        picture(FOLLOWUP, row.overlay_file, "AI가 찾은 경계")
+        picture(FOLLOWUP, row.error_file, "초록 · 일치 / 빨강 · 놓침 / 노랑 · 오탐")
+    paired = frame.pivot(index="stem", columns="condition", values="f1")
+    improved = int((paired.median_3 > paired.noise_3).sum())
+    iou_means = frame.groupby("condition").foreground_iou.mean()
+    st.caption(f"{len(paired)}장 중 {improved}장의 F1이 높아졌습니다. 평균 IoU는 {iou_means['noise_3']:.3f}에서 {iou_means['median_3']:.3f}로 바뀌었습니다. 핵을 찾는 정도와 경계의 겹침을 함께 살펴보세요.")
+    st.caption("성능 하락이 큰 5장만 골랐으므로 전체 이미지에서도 효과가 같다고 주장할 수 없습니다. 잡음 제거로 작은 핵의 정보도 줄어들 수 있다는 설명은 원인 추정입니다.")
+    st.download_button("후속 실험 CSV 받기", (FOLLOWUP / "records.csv").read_bytes(), "median_experiment.csv", "text/csv")
 
 
 def main():
-    heading()
-    choices = ['실제 AI 분석','20장 선정','FluoroCheck 결과','실행 안내']
-    if not AVAILABLE_LOCAL:
-        choices = ['FluoroCheck 결과','실행 안내']
-    page = st.sidebar.radio('메뉴', choices)
-    st.sidebar.divider()
-    st.sidebar.caption('Senescence Lens v1.0 · 비진단 연구 도구')
-    st.sidebar.caption('개발: 학생 주도 실험 기획 + AI 코딩 지원')
-    if page == '실제 AI 분석': local_analysis()
-    elif page == '20장 선정': choose_images()
-    elif page == 'FluoroCheck 결과': result_view()
-    else: guide()
+    st.sidebar.title("🔬 NucleoLens AI")
+    menu = st.sidebar.radio("메뉴", ["홈", "AI 분석 체험", "AI가 어려워하는 사진 TOP 5", "AI 성능 개선 실험"])
+    st.sidebar.caption("v2.1 · AI 세포핵 탐지·정확도 검증 체험 플랫폼")
+    st.caption("사전 계산된 실제 AI 결과를 보여줍니다. 웹에서 새 추론을 실행하지 않습니다.")
+    try:
+        frame = read_results(BASELINE)
+    except (OSError, ValueError, KeyError, pd.errors.ParserError):
+        st.error("분석 기록을 열 수 없습니다. demo_results의 records.csv와 manifest.json을 확인해 주세요.")
+        return
+    if menu == "홈":
+        home(frame)
+    elif menu == "AI 분석 체험":
+        experience(frame)
+    elif menu == "AI가 어려워하는 사진 TOP 5":
+        hardest(frame)
+    else:
+        improvement()
     st.divider()
-    st.caption('BBBC039v1 © CC0, Broad Institute · Cellpose: Stringer et al. (2021) · 실제 결과는 실험 실행 후 생성됩니다.')
+    st.caption("교육·탐구용 · 세포 노화나 질병을 판정하지 않습니다. 데이터 BBBC039v1 · BBBC038v1 / Broad Institute, CC0. 모델 Cellpose 3.1.1.3 nuclei.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

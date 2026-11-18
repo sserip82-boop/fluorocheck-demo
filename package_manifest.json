@@ -1,0 +1,16 @@
+{
+  "file_count": 1848,
+  "bytes": 75770138,
+  "largest_file_bytes": 396192,
+  "gallery_images": 240,
+  "analysis_records": 420,
+  "preview_note": "840px maximum; WebP quality 82; never used as inference input",
+  "excludes": [
+    "raw_images",
+    "ground_truth_masks",
+    "predicted_masks",
+    "model_weights",
+    "cellpose",
+    "torch"
+  ]
+}

@@ -61,7 +61,7 @@ def save_summary_plot(rows, output_path):
     ax.set_ylim(0, 1)
     ax.set_ylabel('Instance F1 @ IoU >= 0.5')
     ax.set_xlabel('Condition')
-    ax.set_title('Senescence Lens - AI nucleus detection reliability')
+    ax.set_title('NucleoLens AI - nucleus detection reliability')
     ax.tick_params(axis='x', labelrotation=40)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)

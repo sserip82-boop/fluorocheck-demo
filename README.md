@@ -1,3 +1,79 @@
+# NucleoLens AI v2.1
+
+**AI 세포핵 탐지·정확도 검증 체험 플랫폼**
+
+“AI는 세포핵을 얼마나 정확하게 찾을까?”
+
+프로젝트 폴더의 PowerShell에서 실행합니다.
+
+~~~powershell
+$env:CELLPOSE_LOCAL_MODELS_PATH = Join-Path (Get-Location) '.venv\cellpose-models'
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8502
+~~~
+
+브라우저에서 http://127.0.0.1:8502 를 엽니다.
+
+1. **홈**에서 240장 원본 사진과 기존 20장 품질 실험의 차이를 확인합니다.
+2. **AI 분석 체험 → 240장 사진 갤러리**에서 데이터셋·종류·검색으로 사진을 찾고 썸네일 아래 이름을 누릅니다.
+3. **AI 분석 체험 → FluoroCheck · 밝기·잡음·흐림**에서 기존 20장의 10가지 조건을 비교합니다.
+4. **AI가 어려워하는 사진 TOP 5**와 **AI 성능 개선 실험**에서 기존 연구 결과를 봅니다.
+
+BBBC038의 사진 종류는 색상과 배경을 기준으로 표시합니다. 모든 사진을 형광 영상으로 분류하지 않습니다.
+F1이 낮거나 검출하지 못한 사진도 유지합니다. 정답·예측 모두 0개면 기존 F1 규칙상 1이며 화면에 설명합니다.
+서로 다른 촬영 환경과 선정 방식을 가진 두 데이터셋의 평균만으로 모델 우열을 결론내릴 수 없습니다.
+
+처리 명령은 다음과 같습니다. 데이터와 결과는 기존 파일을 보존하며 별도 폴더로 관리합니다.
+
+~~~powershell
+.\.venv\Scripts\python.exe download_bbbc038.py
+.\.venv\Scripts\python.exe prepare_gallery.py
+.\.venv\Scripts\python.exe run_gallery.py
+.\.venv\Scripts\python.exe export_v21.py --dest outputs/nucleolens-v21-web
+~~~
+
+이미 다운로드한 공식 ZIP은 재사용하고 CRC를 검사합니다.
+prepare_gallery.py의 inventory 폴더가 이미 있다면 재실행해 덮어쓰지 않습니다.
+run_gallery.py는 체크포인트가 있는 사진을 재추론하지 않으며 원본·정답 해시와 프로토콜을 확인합니다.
+export_v21.py의 대상 폴더가 이미 있다면 새 이름을 사용합니다.
+공개 GitHub 업로드나 Streamlit 재배포는 사용자 승인 후 진행합니다.
+새 패키지의 requirements.txt에는 Cellpose·PyTorch가 없습니다.
+
+아래는 이전 버전의 사용 기록입니다.
+
+---
+
+# Senescence Lens v2.0 시작하기
+
+이미 계산한 200회 결과로 사진을 즉시 비교하고, 어려운 사례 TOP 5와 실제 잡음 제거 후속 실험을 확인합니다.
+
+프로젝트 폴더의 PowerShell에서 실행하세요.
+
+~~~powershell
+$env:CELLPOSE_LOCAL_MODELS_PATH = Join-Path (Get-Location) '.venv\cellpose-models'
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8502
+~~~
+
+브라우저에서 http://127.0.0.1:8502 를 엽니다.
+
+1. **홈**에서 기존 200회 요약을 확인합니다.
+2. **AI 분석 체험**에서 사진과 조건을 선택합니다. 오류 표시는 20장 전체의 원본·밝기·잡음·흐림 200개 조건에 준비되어 있습니다.
+3. **AI가 어려워하는 사진 TOP 5**에서 순위 기준과 자세히 볼 순위를 고릅니다.
+4. **AI 성능 개선 실험**에서 같은 사진의 원본·잡음·Median Filter 결과를 비교합니다.
+
+기존 로컬 AI 분석과 20장 선정 기능은 홈의 **기존 연구 도구**를 펼쳐 이용합니다.
+개발 내역, 정확한 실험 조건, 한계와 검증은 DEVELOPMENT_LOG.md에 기록했습니다.
+
+웹 시연 파일은 다음 명령으로 새 폴더에 준비합니다. 공개 업로드는 별도 작업입니다.
+
+~~~powershell
+.\.venv\Scripts\python.exe export_v2.py --dest outputs/v2-web-ready
+~~~
+
+해당 폴더가 이미 있으면 새 이름을 지정하세요.
+기존 온라인 저장소와 v1 결과는 보존됩니다. 아래는 기존 v1의 로컬 분석 사용 안내입니다.
+
+---
+
 # 🔬 Senescence Lens / FluoroCheck — 초보자 시작 안내
 
 > 본 앱은 **진짜 Cellpose AI**로 BBBC039 형광 세포핵을 탐지하고, 이미지 밝기·잡음·흐림이 탐지 정확도에 미치는 영향을 분석하는 교육 프로젝트입니다. 의료·노화 진단 앱이 아닙니다.

@@ -8,7 +8,7 @@ def _all_instance_ids(mask):
     return np.unique(mask[mask > 0])
 
 
-def score_instances(pred, gt, threshold=0.5):
+def score_instances(pred, gt, threshold=0.5, *, return_matches=False):
     """Return precision, recall, F1, mean matched IoU, foreground IoU.
     If there are no matches, matched_iou is None, not a fictional zero-quality area.
     """
@@ -24,6 +24,7 @@ def score_instances(pred, gt, threshold=0.5):
     either = (pred > 0) | (gt > 0)
     fg_iou = float(both.sum() / either.sum()) if either.any() else 1.0
     ious = np.zeros((ngt, npred), dtype=np.float64)
+    matched_pairs = []
     if ngt and npred:
         # Efficient sparse pair intersections using compressed IDs.
         g = np.searchsorted(g_ids, gt[both])
@@ -37,6 +38,7 @@ def score_instances(pred, gt, threshold=0.5):
         valid = ious >= threshold
         costs = np.where(valid, 1.0 - ious, 1e6)
         gi, pi = linear_sum_assignment(costs)
+        matched_pairs = [(int(g_ids[g0]), int(p_ids[p0])) for g0, p0 in zip(gi, pi) if valid[g0, p0]]
         matched = [float(ious[g0, p0]) for g0, p0 in zip(gi, pi) if valid[g0, p0]]
     else:
         matched = []
@@ -49,7 +51,7 @@ def score_instances(pred, gt, threshold=0.5):
         precision = tp / (tp + fp) if tp + fp else 0.0
         recall = tp / (tp + fn) if tp + fn else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-    return {
+    scores = {
         'gt_count': ngt, 'pred_count': npred, 'tp': tp, 'fp': fp, 'fn': fn,
         'precision': precision, 'recall': recall, 'f1': f1,
         'matched_mean_iou': float(np.mean(matched)) if matched else None,
@@ -57,6 +59,13 @@ def score_instances(pred, gt, threshold=0.5):
         'rel_count_error': (abs(npred - ngt) / ngt) if ngt else None,
         'matching_iou_threshold': threshold,
     }
+    if return_matches:
+        return scores, {
+            'pairs': matched_pairs,
+            'missed': sorted(set(map(int, g_ids)) - {g for g, p in matched_pairs}),
+            'false_positives': sorted(set(map(int, p_ids)) - {p for g, p in matched_pairs}),
+        }
+    return scores
 
 
 def nuclei_statistics(labels):

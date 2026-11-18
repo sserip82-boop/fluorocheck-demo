@@ -1,0 +1,18 @@
+{
+  "state": "complete",
+  "real_cellpose": true,
+  "expected_maps": 200,
+  "source_records_sha256": "1d385ccb9a989798d4e0bc86564c0689bf22c8ae1fe21df901a4f6a55177e6a2",
+  "model": "nuclei",
+  "cellpose": "3.1.1.3",
+  "device": "cpu",
+  "diameter": 17,
+  "normalize": false,
+  "flow_threshold": 0.4,
+  "cellprob_threshold": 0.0,
+  "matching_iou_threshold": 0.5,
+  "created_utc": "2026-11-18T06:05:01.148180+00:00",
+  "completed_maps": 200,
+  "new_inferences": 190,
+  "reused_masks": 10
+}

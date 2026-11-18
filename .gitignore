@@ -10,3 +10,6 @@ data/*
 outputs/*
 !outputs/.gitkeep
 # demo_results/ is explicitly allowed once produced from genuine runs.
+
+# Legacy previews remain local; v2 uses compressed demo_results_v2.
+demo_results/
